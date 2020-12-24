@@ -4,13 +4,15 @@ import numpy as np
 
 class ThermometerEncoder(BaseEstimator, TransformerMixin):
     
-    def __init__(self, columns : List[int], n_bits : int, min_value : Optional[Union[List[float], float]] = None, 
+    def __init__(self, columns : List[int], n_bits : int, quantile_based : bool = False,
+                 min_value : Optional[Union[List[float], float]] = None, 
                  max_value : Optional[Union[List[float], float]] = None):
         self.columns = columns
         self.n_bits = n_bits
+        self.quantile_based = quantile_based
         self.min_value = min_value
         self.max_value = max_value
-        self._bins = {}
+        self._bins = dict()
     
     @property
     def min_value(self):
@@ -35,9 +37,12 @@ class ThermometerEncoder(BaseEstimator, TransformerMixin):
             self._max_value = [value] * len(self.columns)
     
     
-    def fit(self, x, y=None):
+    def fit(self, x: Union[list, np.ndarray], y=None):
         if not isinstance(x, np.ndarray):
             x = np.array(x)
+        
+        if len(x.shape) == 1:
+            x = x.reshape(-1, 1)
         
         if not self.min_value:
             self.min_value = []
@@ -49,27 +54,42 @@ class ThermometerEncoder(BaseEstimator, TransformerMixin):
             for c in self.columns:
                 self.max_value.append(np.max(x[:, c]))
         
-        for i, c in enumerate(self.columns):            
-            self._bins[c] =  np.histogram_bin_edges([], bins=self.n_bits, range=(self.min_value[i], self.max_value[i]))
-        
+        for i, c in enumerate(self.columns):
+            if self.quantile_based:
+                self._bins[c] = np.unique(np.quantile(x, np.linspace(0, 1, self.n_bits+1), 
+                                                      interpolation='higher'))
+            else:
+                self._bins[c] =  np.histogram_bin_edges([], bins=self.n_bits, 
+                                                        range=(self.min_value[i], 
+                                                               self.max_value[i]))
+            self._possible_values = [((i)*[1] + (self.n_bits-i)*[0]) for i in range(self.n_bits+1)]
+            self._possible_values = np.array(self._possible_values)
         return self
                 
     
-    def transform(self, x):
-        x_encoded = np.array([])
-        n_columns = x.shape[1]
-        for c in range(n_columns):
-            if c in self.columns:
-                column_encoded = np.zeros(shape=(x.shape[0], self.n_bits))
-                for i in range(self.n_bits):
-                    mask = (x[:, c] > self._bins[c][i])
-                    column_encoded[mask, i] = 1
-            else:
-                column_encoded = x[:, c].reshape(-1, 1)
-            
-            if x_encoded.size == 0:                
-                x_encoded = column_encoded
-            else:
-                x_encoded = np.hstack((x_encoded, column_encoded))
+    def transform(self, x: Union[list, np.ndarray]):
+        if not isinstance(x, np.ndarray):
+            x = np.array(x)
         
-        return x_encoded      
+        if len(x.shape) == 1:
+            x = x.reshape(-1, 1)
+            
+        x_encoded = []
+        encoded_features = []
+        n_columns = x.shape[1]
+
+        for c in range(n_columns):
+            column = x[:, c]
+            if c in self.columns:
+                levels = np.digitize(column, bins=self._bins[c][:-1], 
+                                     right=True)
+                column_encoded = self._possible_values[levels]
+                encoded_features.append(column_encoded)
+            else:
+                encoded_features.append(column)
+        self.encoded_features = encoded_features
+        
+        x_encoded = np.hstack(encoded_features)
+        
+        return x_encoded
+ 
